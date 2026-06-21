@@ -1,0 +1,113 @@
+##
+## workflow-6-audit-log.yaml
+## VWFD Dialect v3.0 — Workflow: Audit Log (Asinkron via Detached Edge)
+## Kelompok 3 | Sistem Manajemen Pesanan Berbasis VFlow
+##
+## Fungsi  : INSERT rekam jejak transaksi ke tabel audit_log secara
+##            fire-and-forget (detached edge — async setelah response dikirim).
+## Input   : { aktivitas_tipe, pesanan_id?, aktor_id?, payload_log, waktu_kejadian? }
+## Trigger : webhook (HTTP POST)
+## Mode    : runtime_mode: fastpath + detached branch untuk INSERT
+##
+## Pola implementasi:
+##   Trigger → EndTrigger (response langsung ke client)
+##   Trigger → [detached edge] → Validate → INSERT audit_log
+##
+## Ini adalah implementasi fire-and-forget yang benar menggunakan
+## detached: true pada edge menuju branch audit.
+##
+
+dialect: vflow
+version: "3.0"
+
+metadata:
+  name: w6-audit-log
+  description: "Workflow untuk mencatat audit log secara asinkron (detached edge)"
+  author: "Kelompok 3"
+
+spec:
+  runtime_mode: fastpath
+
+  activities:
+
+    ## ── Step 1: Trigger ──────────────────────────────────────────────────
+    - id: event_trigger
+      activity_type: Trigger
+      trigger_config:
+        trigger_type: webhook
+        runtime_mode: fastpath
+        end_activity: end_response
+        webhook_config:
+          path: /trigger/w6-audit-log
+          method: POST
+      output_variable: trigger_payload
+
+    ## ── Step 2: EndTrigger — Response langsung ke client (non-blocking) ────
+    ## Karena detached, client menerima 202 Accepted segera.
+    - id: end_response
+      activity_type: EndTrigger
+      end_trigger_config:
+        trigger_ref: event_trigger
+        final_response:
+          language: literal
+          source: '{"recorded":true,"message":"Audit log diterima dan diproses secara asinkron."}'
+
+    ## ── Step 3: Validate — Strict parameter check (di background) ──────────
+    - id: validate_log_params
+      activity_type: Validate
+      validate_config:
+        input: "$.trigger_payload.body"
+        schema:
+          type: object
+          required: [aktivitas_tipe, payload_log]
+          properties:
+            aktivitas_tipe:
+              type: string
+              maxLength: 60
+            payload_log:
+              type: object
+            pesanan_id:
+              type: string
+            aktor_id:
+              type: string
+            waktu_kejadian:
+              type: string
+
+    ## ── Step 4: Connector — INSERT audit log ke PostgreSQL ─────────────────
+    - id: tulis_audit_log
+      activity_type: Connector
+      connector_config:
+        connector_ref: "vastar.db.postgres"
+        operation: query
+        query: >
+          INSERT INTO audit_log (
+            aktivitas_tipe,
+            pesanan_id,
+            payload_log,
+            created_at
+          )
+          VALUES (
+            :aktivitas_tipe,
+            :pesanan_id,
+            :payload_log::jsonb,
+            COALESCE(:waktu_kejadian::timestamptz, NOW())
+          )
+          RETURNING id, aktivitas_tipe, pesanan_id, created_at;
+      input_mappings:
+        - target: aktivitas_tipe
+          source: { language: v-cel, source: "trigger_payload.body.aktivitas_tipe" }
+        - target: pesanan_id
+          source: { language: v-cel, source: "trigger_payload.body.pesanan_id" }
+        - target: payload_log
+          source: { language: v-cel, source: "trigger_payload.body.payload_log" }
+        - target: waktu_kejadian
+          source: { language: v-cel, source: "trigger_payload.body.waktu_kejadian" }
+      output_variable: log_result
+
+  ## ── Flows ────────────────────────────────────────────────────────────────
+  ## f1: response path (non-detached) — langsung ke EndTrigger
+  ## f2: detached edge ke branch audit (fire-and-forget setelah response)
+  flows:
+    - { id: f1, from: { node: event_trigger       }, to: { node: end_response         } }
+    - { id: f2, from: { node: event_trigger       }, to: { node: validate_log_params  }, detached: true }
+    - { id: f3, from: { node: validate_log_params }, to: { node: tulis_audit_log      } }

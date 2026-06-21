@@ -1,0 +1,212 @@
+##
+## aturan_harga_umkm_v1.yaml
+## VDICL Rule Pack — Kalkulasi Harga UMKM
+## Kelompok 3 | Sistem Manajemen Pesanan Berbasis VFlow
+##
+## Rule pack ini menghitung:
+##   1. diskon       — berdasarkan tipe pelanggan + jumlah item (grosir)
+##   2. biaya_admin  — berdasarkan metode pembayaran
+##   3. biaya_pengiriman — berdasarkan metode pengambilan
+##
+## Dipanggil oleh Workflow 3 (w3-kalkulasi-tagihan) via VRule activity.
+## Tim manajemen bisa mengubah nominal tanpa menyentuh kode backend.
+##
+
+id: aturan_harga_umkm_v1
+version: "1.0.0"
+description: "Rule pack kalkulasi harga pesanan UMKM — diskon, biaya admin, biaya pengiriman"
+hit_policy: COLLECT
+output_conflict_policy: LWW
+
+## ── Schema Input Fact ──────────────────────────────────────────────────────
+schema:
+  fact:
+    subtotal:           number    # total harga sebelum diskon/biaya (Rp)
+    total_item:         integer   # jumlah total item dalam pesanan
+    tipe_pelanggan:     string    # "reguler" | "member"
+    metode_pembayaran:  string    # "tunai" | "e-wallet" | "transfer"
+    metode_pengambilan: string    # "ambil-sendiri" | "delivery"
+
+## ── Rules ──────────────────────────────────────────────────────────────────
+rules:
+
+  ## ── Diskon: Default (tidak ada diskon) ─────────────────────────────────
+  - id: no_discount_default
+    description: "Tidak ada diskon untuk pelanggan reguler dengan pembelian normal"
+    priority: 0
+    when:
+      all:
+        - field: tipe_pelanggan
+          op: "="
+          value: "reguler"
+        - field: total_item
+          op: "<"
+          value: 10
+    actions:
+      - type: set_output
+        key: diskon
+        value: 0
+
+  ## ── Diskon: Member 10% ──────────────────────────────────────────────────
+  - id: diskon_member_10pct
+    description: "Diskon 10% untuk pelanggan member"
+    priority: 10
+    when:
+      all:
+        - field: tipe_pelanggan
+          op: "="
+          value: "member"
+        - field: total_item
+          op: "<"
+          value: 10
+    actions:
+      - type: set_output
+        key: diskon
+        value: "subtotal * 0.10"
+      - type: add_finding
+        severity: info
+        code: DISKON_MEMBER_10PCT
+        message: "Diskon 10% diterapkan untuk pelanggan member"
+
+  ## ── Diskon: Grosir reguler (≥10 item) — 5% ─────────────────────────────
+  - id: diskon_grosir_reguler
+    description: "Diskon 5% untuk pembelian grosir (≥10 item) pelanggan reguler"
+    priority: 20
+    when:
+      all:
+        - field: tipe_pelanggan
+          op: "="
+          value: "reguler"
+        - field: total_item
+          op: ">="
+          value: 10
+    actions:
+      - type: set_output
+        key: diskon
+        value: "subtotal * 0.05"
+      - type: add_finding
+        severity: info
+        code: DISKON_GROSIR_5PCT
+        message: "Diskon 5% diterapkan untuk pembelian grosir"
+
+  ## ── Diskon: Grosir member (≥10 item) — 15% ─────────────────────────────
+  - id: diskon_grosir_member
+    description: "Diskon 15% untuk pembelian grosir (≥10 item) pelanggan member"
+    priority: 30
+    when:
+      all:
+        - field: tipe_pelanggan
+          op: "="
+          value: "member"
+        - field: total_item
+          op: ">="
+          value: 10
+    actions:
+      - type: set_output
+        key: diskon
+        value: "subtotal * 0.15"
+      - type: add_finding
+        severity: info
+        code: DISKON_GROSIR_MEMBER_15PCT
+        message: "Diskon 15% diterapkan untuk pembelian grosir pelanggan member"
+
+  ## ── Biaya Admin: Tunai — gratis ──────────────────────────────────────────
+  - id: admin_tunai
+    description: "Tidak ada biaya admin untuk pembayaran tunai"
+    priority: 10
+    when:
+      - field: metode_pembayaran
+        op: "="
+        value: "tunai"
+    actions:
+      - type: set_output
+        key: biaya_admin
+        value: 0
+
+  ## ── Biaya Admin: Transfer bank — Rp 2.500 ───────────────────────────────
+  - id: admin_transfer
+    description: "Biaya admin Rp 2.500 untuk pembayaran transfer bank"
+    priority: 10
+    when:
+      - field: metode_pembayaran
+        op: "="
+        value: "transfer"
+    actions:
+      - type: set_output
+        key: biaya_admin
+        value: 2500
+      - type: add_finding
+        severity: info
+        code: BIAYA_ADMIN_TRANSFER
+        message: "Biaya admin transfer bank Rp 2.500 diterapkan"
+
+  ## ── Biaya Admin: E-Wallet — Rp 1.500 ────────────────────────────────────
+  - id: admin_ewallet
+    description: "Biaya admin Rp 1.500 untuk pembayaran e-wallet"
+    priority: 10
+    when:
+      - field: metode_pembayaran
+        op: "="
+        value: "e-wallet"
+    actions:
+      - type: set_output
+        key: biaya_admin
+        value: 1500
+      - type: add_finding
+        severity: info
+        code: BIAYA_ADMIN_EWALLET
+        message: "Biaya admin e-wallet Rp 1.500 diterapkan"
+
+  ## ── Biaya Pengiriman: Ambil sendiri — gratis ─────────────────────────────
+  - id: pengiriman_ambil_sendiri
+    description: "Tidak ada biaya pengiriman untuk pengambilan langsung"
+    priority: 10
+    when:
+      - field: metode_pengambilan
+        op: "="
+        value: "ambil-sendiri"
+    actions:
+      - type: set_output
+        key: biaya_pengiriman
+        value: 0
+
+  ## ── Biaya Pengiriman: Delivery — Rp 10.000 ──────────────────────────────
+  - id: pengiriman_delivery
+    description: "Biaya pengiriman Rp 10.000 untuk pengiriman delivery"
+    priority: 10
+    when:
+      - field: metode_pengambilan
+        op: "="
+        value: "delivery"
+    actions:
+      - type: set_output
+        key: biaya_pengiriman
+        value: 10000
+      - type: add_finding
+        severity: info
+        code: BIAYA_PENGIRIMAN_DELIVERY
+        message: "Biaya pengiriman delivery Rp 10.000 diterapkan"
+
+  ## ── Biaya Pengiriman: Delivery gratis untuk member ≥ Rp 150.000 ─────────
+  - id: pengiriman_delivery_gratis_member
+    description: "Gratis ongkir untuk member dengan subtotal >= Rp 150.000"
+    priority: 20
+    when:
+      all:
+        - field: metode_pengambilan
+          op: "="
+          value: "delivery"
+        - field: tipe_pelanggan
+          op: "="
+          value: "member"
+        - field: subtotal
+          op: ">="
+          value: 150000
+    actions:
+      - type: set_output
+        key: biaya_pengiriman
+        value: 0
+      - type: add_finding
+        severity: info
+        code: GRATIS_ONGKIR_MEMBER
+        message: "Gratis ongkir untuk member dengan belanja >= Rp 150.000"
