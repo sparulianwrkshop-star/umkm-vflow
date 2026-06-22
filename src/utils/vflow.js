@@ -13,7 +13,12 @@ const TIMEOUT_MS = parseInt(process.env.VFLOW_TIMEOUT_MS) || 10_000;
  * @returns {Promise<object>} - Data response dari VFlow
  */
 async function callVFlow(path, body) {
-  const url = `${VFLOW_BASE_URL}${path}`;
+  // Membersihkan slash di akhir base URL jika ada
+  const baseUrl = VFLOW_BASE_URL.replace(/\/$/, "");
+  // Membersihkan slash di awal path jika ada
+  const cleanPath = path.replace(/^\//, "");
+  // Menggabungkan dengan satu slash tunggal yang pasti aman
+  const url = `${baseUrl}/${cleanPath}`;
 
   try {
     const response = await axios.post(url, body, {
@@ -26,7 +31,7 @@ async function callVFlow(path, body) {
     if (err.response) {
       const vflowErr = new Error(
         `VFlow mengembalikan error ${err.response.status}: ` +
-          JSON.stringify(err.response.data)
+        JSON.stringify(err.response.data)
       );
       vflowErr.isVFlowError = true;
       vflowErr.vflowStatus = err.response.status;
@@ -38,7 +43,7 @@ async function callVFlow(path, body) {
     if (err.code === "ECONNABORTED" || err.code === "ECONNREFUSED") {
       const netErr = new Error(
         `Tidak dapat terhubung ke VFlow Server (${url}). ` +
-          "Pastikan VFlow sudah berjalan."
+        "Pastikan VFlow sudah berjalan."
       );
       netErr.isVFlowError = true;
       throw netErr;
